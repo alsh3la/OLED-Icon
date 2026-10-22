@@ -1,0 +1,36 @@
+{
+  "url": "http://127.0.0.1:8080/",
+  "viewports": {
+    "desktop": {
+      "width": 1280,
+      "height": 800,
+      "status": 200,
+      "title": "OLED Icon Maker",
+      "hasCanvas": false,
+      "bodyTextLen": 868,
+      "bodyTextHash": "d008a3769e24727cda90b85295f328834682baa274b1ee94069ccd6efda78b34",
+      "bodyTextPrefix": "OLED Icon Maker One square. Every size Apple, Google, and the we",
+      "horizontalOverflow": false,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshot": "/workspace/screenshots/app-builder-preview.png"
+    },
+    "mobile": {
+      "width": 390,
+      "height": 844,
+      "status": 200,
+      "title": "OLED Icon Maker",
+      "hasCanvas": false,
+      "bodyTextLen": 803,
+      "bodyTextHash": "7ffa6dd37c3f08494f6c880a81d60fbf62cd8503fc1ae8c7f349e3dcf5e32540",
+      "bodyTextPrefix": "OLED Icon Maker Drop a PNG or JPG It is framed into a square, ke",
+      "horizontalOverflow": false,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshot": "/workspace/screenshots/app-builder-preview-mobile.png"
+    }
+  },
+  "brandWarnings": [],
+  "authWarnings": [],
+  "verdictFile": "/workspace/screenshots/app-builder-preview.json"
+}

@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="OLED Icon Maker">
+  <rect width="32" height="32" fill="#050505"/>
+  <rect x="3" y="3" width="26" height="26" rx="7" fill="none" stroke="#2EE6FF" stroke-width="2.5"/>
+  <rect x="9" y="9" width="14" height="14" rx="3.5" fill="#2EE6FF"/>
+</svg>
