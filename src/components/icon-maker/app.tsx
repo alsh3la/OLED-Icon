@@ -419,7 +419,7 @@ export function IconMaker() {
       </header>
 
       <div className="lg:grid lg:min-h-0 lg:flex-1 lg:grid-cols-2 lg:overflow-hidden">
-        <section className="min-w-0 px-4 py-6 pb-36 sm:px-6 lg:overflow-y-auto lg:pb-10">
+        <section className="min-w-0 px-4 py-6 pb-36 sm:px-6 lg:scroll-modern lg:scroll-fade lg:pb-10">
           {!source ? (
             <EmptyStage
               dragging={dragging}
@@ -507,7 +507,7 @@ export function IconMaker() {
         </section>
 
         <aside className="min-w-0 border-t border-line lg:flex lg:h-full lg:flex-col lg:overflow-hidden lg:border-t-0 lg:border-l">
-          <div className="flex flex-col gap-6 px-4 py-6 pb-36 sm:px-6 lg:flex-1 lg:overflow-y-auto lg:pb-6">
+          <div className="flex flex-col gap-6 px-4 py-6 pb-36 sm:px-6 lg:flex-1 lg:scroll-modern lg:scroll-fade lg:pb-6">
             <section className="flex flex-col gap-3">
               <h2 className="text-sm font-medium">Artwork</h2>
               <div className="flex flex-wrap gap-2">
@@ -766,7 +766,7 @@ export function IconMaker() {
                         platforms.web ? " + favicon.ico" : ""
                       }${manifest && appleSelected ? " + Contents.json" : ""}`}
                 </summary>
-                <ul className="mt-3 max-h-40 overflow-auto font-mono text-xs leading-5 text-faint">
+                <ul className="scroll-modern mt-3 max-h-40 font-mono text-xs leading-5 text-faint">
                   {jobs.map((job) => (
                     <li key={job.path}>
                       {job.path} · {job.px}px
