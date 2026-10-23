@@ -11,7 +11,9 @@ import {
   Music,
   Phone,
   Pipette,
+  Redo2,
   RotateCcw,
+  Undo2,
   type LucideIcon,
 } from "lucide-react";
 import { toColorInput } from "@/lib/icon/color";
@@ -57,6 +59,12 @@ type Stage =
 
 type View = "home" | "plate";
 
+type PanProps = React.ImgHTMLAttributes<HTMLImageElement>;
+
+const PREFS_KEY = "oled-icon:prefs";
+const HISTORY_LIMIT = 100;
+const HISTORY_GAP_MS = 500;
+
 const KEY_SWATCHES = ["#00ff00", "#0000ff", "#ff00ff", "#ffffff", "#000000"];
 const FILL_SWATCHES = ["#000000", "#ffffff", "#101012", "#f4f4f5", "#2ee6ff"];
 
@@ -87,6 +95,19 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function slug(name: string): string {
+  const base = name
+    .replace(/\.[^.]+$/, "")
+    .replace(/[^a-z0-9]+/gi, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 40);
+  return base || "OLED";
+}
+
+function clampPan(n: number): number {
+  return Math.min(1, Math.max(-1, n));
+}
+
 function saveBlob(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
@@ -111,13 +132,22 @@ export function IconMaker() {
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [transparent, setTransparent] = useState(false);
   const [stage, setStage] = useState<Stage>({ kind: "idle" });
+  const [light, setLight] = useState(false);
+  const [prefsLoaded, setPrefsLoaded] = useState(false);
+  const [hist, setHist] = useState({ undo: 0, redo: 0 });
   const framedRef = useRef<HTMLCanvasElement | null>(null);
   const zipRef = useRef<Blob | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const dragDepth = useRef(0);
   const sourceRef = useRef<Source | null>(null);
   const buildId = useRef(0);
+  const editRef = useRef<EditState>(DEFAULT_EDIT);
+  const pastRef = useRef<EditState[]>([]);
+  const futureRef = useRef<EditState[]>([]);
+  const lastPatchAt = useRef(0);
+  const dragRef = useRef<{ x: number; y: number; w: number } | null>(null);
   sourceRef.current = source;
+  editRef.current = edit;
 
   const selected = useMemo(
     () => PACKS.filter((pack) => platforms[pack.id]).map((pack) => pack.id),
@@ -132,13 +162,53 @@ export function IconMaker() {
     setStage({ kind: "idle" });
   }, []);
 
+  const syncHist = useCallback(() => {
+    setHist({ undo: pastRef.current.length, redo: futureRef.current.length });
+  }, []);
+
   const patch = useCallback(
     (partial: Partial<EditState>) => {
-      setEdit((current) => ({ ...current, ...partial }));
+      const current = editRef.current;
+      const changed = (Object.keys(partial) as (keyof EditState)[]).some(
+        (key) => current[key] !== partial[key],
+      );
+      if (changed) {
+        const now = Date.now();
+        if (now - lastPatchAt.current > HISTORY_GAP_MS) {
+          pastRef.current.push(current);
+          if (pastRef.current.length > HISTORY_LIMIT) pastRef.current.shift();
+        }
+        lastPatchAt.current = now;
+        futureRef.current = [];
+        syncHist();
+      }
+      setEdit((prev) => ({ ...prev, ...partial }));
       forgetZip();
     },
-    [forgetZip],
+    [forgetZip, syncHist],
   );
+
+  const undo = useCallback(() => {
+    const prev = pastRef.current.pop();
+    if (!prev) return;
+    futureRef.current.push(editRef.current);
+    editRef.current = prev;
+    lastPatchAt.current = 0;
+    setEdit(prev);
+    forgetZip();
+    syncHist();
+  }, [forgetZip, syncHist]);
+
+  const redo = useCallback(() => {
+    const next = futureRef.current.pop();
+    if (!next) return;
+    pastRef.current.push(editRef.current);
+    editRef.current = next;
+    lastPatchAt.current = 0;
+    setEdit(next);
+    forgetZip();
+    syncHist();
+  }, [forgetZip, syncHist]);
 
   const replaceSource = useCallback(
     (next: Source, nextEdit?: Partial<EditState>) => {
@@ -147,11 +217,15 @@ export function IconMaker() {
         return next;
       });
       if (nextEdit) setEdit((current) => ({ ...current, ...nextEdit }));
+      pastRef.current = [];
+      futureRef.current = [];
+      lastPatchAt.current = 0;
+      syncHist();
       setCorner(null);
       setPicking(false);
       forgetZip();
     },
-    [forgetZip],
+    [forgetZip, syncHist],
   );
 
   const loadFile = useCallback(
@@ -237,6 +311,56 @@ export function IconMaker() {
   }, [picking]);
 
   useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (!(event.metaKey || event.ctrlKey) || event.altKey) return;
+      if (event.key.toLowerCase() !== "z") return;
+      const target = event.target;
+      if (
+        target instanceof HTMLTextAreaElement ||
+        (target instanceof HTMLInputElement && (target.type === "text" || target.type === ""))
+      ) {
+        return;
+      }
+      event.preventDefault();
+      if (event.shiftKey) redo();
+      else undo();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [undo, redo]);
+
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(PREFS_KEY);
+      if (raw) {
+        const saved = JSON.parse(raw) as Record<string, unknown>;
+        if (saved.platforms && typeof saved.platforms === "object") {
+          setPlatforms({ ...DEFAULT_PLATFORMS, ...(saved.platforms as Record<PlatformId, boolean>) });
+        }
+        if (typeof saved.manifest === "boolean") setManifest(saved.manifest);
+        if (typeof saved.appName === "string") setAppName(saved.appName.slice(0, 12));
+        if (typeof saved.guide === "boolean") setGuide(saved.guide);
+        if (typeof saved.light === "boolean") setLight(saved.light);
+      }
+    } catch {
+      // Storage can be unavailable or hold bad JSON; defaults are fine.
+    }
+    setPrefsLoaded(true);
+  }, []);
+
+  useEffect(() => {
+    if (!prefsLoaded) return;
+    try {
+      window.localStorage.setItem(
+        PREFS_KEY,
+        JSON.stringify({ platforms, manifest, appName, guide, light }),
+      );
+    } catch {
+      // Ignore quota or privacy-mode errors.
+    }
+  }, [prefsLoaded, platforms, manifest, appName, guide, light]);
+
+  useEffect(() => {
     const current = source;
     if (!current) {
       setPreviewUrl((prev) => {
@@ -305,6 +429,82 @@ export function IconMaker() {
     setPicking(false);
   };
 
+  const zipName = source ? `${slug(source.name)}-icons.zip` : "OLED-Icons.zip";
+
+  const canPan =
+    !!source &&
+    !picking &&
+    (edit.framing === "cover" ? source.width !== source.height || edit.zoom > 1 : edit.zoom > 1);
+
+  const panBy = (dx: number, dy: number) => {
+    if (!source) return;
+    const { width: sw, height: sh } = source;
+    const { zoom, panX, panY } = edit;
+    let nextX = panX;
+    let nextY = panY;
+    if (edit.framing === "cover") {
+      const side = Math.min(sw, sh) / zoom;
+      const maxX = Math.max(0, sw - side);
+      const maxY = Math.max(0, sh - side);
+      if (maxX > 0) nextX = panX - (2 * dx * side) / maxX;
+      if (maxY > 0) nextY = panY - (2 * dy * side) / maxY;
+    } else {
+      const fit = Math.min(1 / sw, 1 / sh);
+      const spareX = Math.max(0, sw * fit * zoom - 1);
+      const spareY = Math.max(0, sh * fit * zoom - 1);
+      if (spareX > 0) nextX = panX + dx / (spareX / 2);
+      if (spareY > 0) nextY = panY + dy / (spareY / 2);
+    }
+    patch({ panX: clampPan(nextX), panY: clampPan(nextY) });
+  };
+
+  const panProps: PanProps = canPan
+    ? {
+        draggable: false,
+        style: { touchAction: "none", cursor: "grab" },
+        onPointerDown: (event) => {
+          event.currentTarget.setPointerCapture(event.pointerId);
+          dragRef.current = {
+            x: event.clientX,
+            y: event.clientY,
+            w: event.currentTarget.getBoundingClientRect().width || 1,
+          };
+        },
+        onPointerMove: (event) => {
+          const drag = dragRef.current;
+          if (!drag) return;
+          const dx = (event.clientX - drag.x) / drag.w;
+          const dy = (event.clientY - drag.y) / drag.w;
+          drag.x = event.clientX;
+          drag.y = event.clientY;
+          panBy(dx, dy);
+        },
+        onPointerUp: () => {
+          dragRef.current = null;
+        },
+        onPointerCancel: () => {
+          dragRef.current = null;
+        },
+      }
+    : {};
+
+  const downloadPng = async () => {
+    const current = sourceRef.current;
+    if (!current || stage.kind === "working") return;
+    try {
+      const { final } = renderMaster(current.image, current.width, current.height, edit);
+      const bytes = await canvasToPng(downscale(final, 1024));
+      const buffer = new ArrayBuffer(bytes.byteLength);
+      new Uint8Array(buffer).set(bytes);
+      saveBlob(new Blob([buffer], { type: "image/png" }), `${slug(current.name)}-1024.png`);
+    } catch (error) {
+      setStage({
+        kind: "error",
+        message: error instanceof Error ? error.message : "Could not export the PNG.",
+      });
+    }
+  };
+
   const build = async () => {
     const current = sourceRef.current;
     if (!current || stage.kind === "working") return;
@@ -314,7 +514,7 @@ export function IconMaker() {
     }
     const existing = zipRef.current;
     if (stage.kind === "ready" && existing) {
-      saveBlob(existing, "OLED-Icons.zip");
+      saveBlob(existing, zipName);
       return;
     }
     const id = ++buildId.current;
@@ -439,16 +639,38 @@ export function IconMaker() {
                     if (!picking) setView(next);
                   }}
                 />
-                <button
-                  type="button"
-                  className="rounded-md border border-line bg-surface px-3 py-2 text-sm text-fg"
-                  onPointerDown={() => setCompare(true)}
-                  onPointerUp={() => setCompare(false)}
-                  onPointerLeave={() => setCompare(false)}
-                  onPointerCancel={() => setCompare(false)}
-                >
-                  Hold to compare
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    aria-label="Undo"
+                    title="Undo (Ctrl/Cmd+Z)"
+                    disabled={hist.undo === 0}
+                    onClick={undo}
+                    className="grid size-10 place-items-center rounded-md border border-line bg-surface text-fg disabled:text-faint disabled:opacity-50"
+                  >
+                    <Undo2 className="size-4" aria-hidden="true" />
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="Redo"
+                    title="Redo (Ctrl/Cmd+Shift+Z)"
+                    disabled={hist.redo === 0}
+                    onClick={redo}
+                    className="grid size-10 place-items-center rounded-md border border-line bg-surface text-fg disabled:text-faint disabled:opacity-50"
+                  >
+                    <Redo2 className="size-4" aria-hidden="true" />
+                  </button>
+                  <button
+                    type="button"
+                    className="rounded-md border border-line bg-surface px-3 py-2 text-sm text-fg"
+                    onPointerDown={() => setCompare(true)}
+                    onPointerUp={() => setCompare(false)}
+                    onPointerLeave={() => setCompare(false)}
+                    onPointerCancel={() => setCompare(false)}
+                  >
+                    Hold to compare
+                  </button>
+                </div>
               </div>
 
               {(picking ? "plate" : view) === "home" ? (
@@ -458,6 +680,8 @@ export function IconMaker() {
                   src={previewUrl}
                   picking={picking}
                   onPick={onPreviewClick}
+                  light={light}
+                  pan={panProps}
                 />
               ) : (
                 <Plate
@@ -465,8 +689,12 @@ export function IconMaker() {
                   guide={guide}
                   picking={picking}
                   onPick={onPreviewClick}
+                  pan={panProps}
                 />
               )}
+              {canPan ? (
+                <p className="text-center text-xs text-faint">Drag the preview to reposition.</p>
+              ) : null}
 
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <p className="font-mono text-sm text-muted tabular-nums">
@@ -474,15 +702,28 @@ export function IconMaker() {
                   {shortSide < 1024 ? " · under 1024" : ""}
                   {compare ? " · original" : ""}
                 </p>
-                <label className="flex items-center gap-2 text-sm text-muted">
-                  <input
-                    type="checkbox"
-                    checked={guide}
-                    onChange={(event) => setGuide(event.target.checked)}
-                    className="size-4 accent-accent"
-                  />
-                  Safe inset
-                </label>
+                <div className="flex items-center gap-4">
+                  {(picking ? "plate" : view) === "home" ? (
+                    <label className="flex items-center gap-2 text-sm text-muted">
+                      <input
+                        type="checkbox"
+                        checked={light}
+                        onChange={(event) => setLight(event.target.checked)}
+                        className="size-4 accent-accent"
+                      />
+                      Light
+                    </label>
+                  ) : null}
+                  <label className="flex items-center gap-2 text-sm text-muted">
+                    <input
+                      type="checkbox"
+                      checked={guide}
+                      onChange={(event) => setGuide(event.target.checked)}
+                      className="size-4 accent-accent"
+                    />
+                    Safe inset
+                  </label>
+                </div>
               </div>
 
               <ol className="flex items-end justify-between gap-4 px-2">
@@ -788,9 +1029,8 @@ export function IconMaker() {
               <button
                 type="button"
                 onClick={() => {
-                  setEdit(DEFAULT_EDIT);
+                  patch(DEFAULT_EDIT);
                   setPicking(false);
-                  forgetZip();
                 }}
                 className="inline-flex items-center gap-2 self-start text-sm text-muted"
               >
@@ -801,11 +1041,12 @@ export function IconMaker() {
           </div>
 
           <div className="fixed inset-x-0 bottom-0 z-20 border-t border-line bg-bg px-4 py-3 sm:px-6 lg:static">
+            <div className="flex gap-2">
             <button
               type="button"
               disabled={!source || stage.kind === "working"}
               onClick={() => void build()}
-              className="flex w-full items-center justify-center gap-2 rounded-md bg-accent px-4 py-3 text-base font-semibold text-accent-ink disabled:bg-surface-2 disabled:text-faint"
+              className="flex min-w-0 flex-1 items-center justify-center gap-2 rounded-md bg-accent px-4 py-3 text-base font-semibold text-accent-ink disabled:bg-surface-2 disabled:text-faint"
             >
               {stage.kind === "ready" ? (
                 <Download className="size-5" aria-hidden="true" />
@@ -815,9 +1056,19 @@ export function IconMaker() {
               {stage.kind === "working"
                 ? `Building ${stage.done} / ${stage.total}`
                 : stage.kind === "ready"
-                  ? "Download OLED-Icons.zip"
+                  ? `Download ${zipName}`
                   : "Build icon ZIP"}
             </button>
+            <button
+              type="button"
+              disabled={!source || stage.kind === "working"}
+              onClick={() => void downloadPng()}
+              title="Download a single 1024×1024 PNG"
+              className="shrink-0 rounded-md border border-line bg-surface px-4 py-3 text-sm font-medium text-fg disabled:text-faint disabled:opacity-60"
+            >
+              1024 PNG
+            </button>
+            </div>
             <p
             className={`mt-2 min-h-5 text-center text-sm ${stage.kind === "error" ? "text-danger" : "text-muted"}`}
             aria-live="polite"
@@ -924,35 +1175,60 @@ function DevicePreview({
   src,
   picking,
   onPick,
+  light,
+  pan,
 }: {
   name: string;
   onName: (value: string) => void;
   src: string | null;
   picking: boolean;
   onPick: (event: React.MouseEvent<HTMLImageElement>) => void;
+  light: boolean;
+  pan: PanProps;
 }) {
+  const ink = light ? "bg-neutral-900 border-neutral-900" : "bg-fg border-fg";
   return (
-    <div className="mx-auto w-full max-w-sm rounded-xl border border-line bg-bg p-3">
-      <div className="rounded-lg border border-line bg-bg px-4 pb-4 pt-3">
+    <div
+      className={`mx-auto w-full max-w-sm rounded-xl border p-3 ${
+        light ? "border-neutral-300 bg-neutral-200 text-neutral-900" : "border-line bg-bg"
+      }`}
+    >
+      <div
+        className={`rounded-lg border px-4 pb-4 pt-3 ${
+          light ? "border-neutral-300 bg-neutral-100" : "border-line bg-bg"
+        }`}
+      >
         <div className="mb-5 flex items-center justify-between text-sm">
           <span className="font-medium tabular-nums">9:41</span>
           <span className="flex items-center gap-1" aria-hidden="true">
-            <span className="h-1.5 w-1.5 rounded-full bg-fg" />
-            <span className="h-1.5 w-1.5 rounded-full bg-fg" />
-            <span className="h-2 w-4 rounded-sm border border-fg" />
+            <span className={`h-1.5 w-1.5 rounded-full ${ink}`} />
+            <span className={`h-1.5 w-1.5 rounded-full ${ink}`} />
+            <span className={`h-2 w-4 rounded-sm border ${ink.split(" ")[1]}`} />
           </span>
         </div>
         <div className="grid grid-cols-4 gap-3">
-          <IconSlot name={name} onName={onName} src={src} picking={picking} onPick={onPick} />
+          <IconSlot
+            name={name}
+            onName={onName}
+            src={src}
+            picking={picking}
+            onPick={onPick}
+            light={light}
+            pan={pan}
+          />
           {HOME_APPS.map((app) => (
-            <GhostIcon key={app.name} name={app.name} icon={app.icon} />
+            <GhostIcon key={app.name} name={app.name} icon={app.icon} light={light} />
           ))}
         </div>
-        <div className="mt-8 grid grid-cols-4 gap-3 rounded-lg bg-surface px-2 py-3">
+        <div
+          className={`mt-8 grid grid-cols-4 gap-3 rounded-lg px-2 py-3 ${
+            light ? "bg-white/70" : "bg-surface"
+          }`}
+        >
           {DOCK.map((app) => (
-            <GhostIcon key={app.name} name={app.name} icon={app.icon} />
+            <GhostIcon key={app.name} name={app.name} icon={app.icon} light={light} />
           ))}
-          <GhostIcon name="Notes" icon={FileText} />
+          <GhostIcon name="Notes" icon={FileText} light={light} />
         </div>
       </div>
     </div>
@@ -965,12 +1241,16 @@ function IconSlot({
   src,
   picking,
   onPick,
+  light,
+  pan,
 }: {
   name: string;
   onName: (value: string) => void;
   src: string | null;
   picking: boolean;
   onPick: (event: React.MouseEvent<HTMLImageElement>) => void;
+  light: boolean;
+  pan: PanProps;
 }) {
   return (
     <div className="flex flex-col items-center gap-1">
@@ -979,6 +1259,7 @@ function IconSlot({
           src={src}
           alt="Icon preview"
           onClick={onPick}
+          {...pan}
           className={`squircle aspect-square w-full object-cover ${picking ? "cursor-crosshair ring-2 ring-accent" : ""}`}
         />
       ) : (
@@ -989,19 +1270,35 @@ function IconSlot({
         maxLength={12}
         aria-label="Home screen name"
         onChange={(event) => onName(event.target.value)}
-        className="w-full bg-transparent text-center text-xs text-fg outline-none"
+        className={`w-full bg-transparent text-center text-xs outline-none ${light ? "text-neutral-900" : "text-fg"}`}
       />
     </div>
   );
 }
 
-function GhostIcon({ name, icon: Icon }: { name: string; icon: LucideIcon }) {
+function GhostIcon({
+  name,
+  icon: Icon,
+  light,
+}: {
+  name: string;
+  icon: LucideIcon;
+  light: boolean;
+}) {
   return (
     <div className="flex flex-col items-center gap-1" aria-hidden="true">
-      <div className="squircle grid aspect-square w-full place-items-center bg-surface-2 text-muted">
+      <div
+        className={`squircle grid aspect-square w-full place-items-center ${
+          light ? "bg-white text-neutral-500" : "bg-surface-2 text-muted"
+        }`}
+      >
         <Icon className="size-5" />
       </div>
-      <span className="w-full truncate text-center text-xs text-faint">{name}</span>
+      <span
+        className={`w-full truncate text-center text-xs ${light ? "text-neutral-600" : "text-faint"}`}
+      >
+        {name}
+      </span>
     </div>
   );
 }
@@ -1011,11 +1308,13 @@ function Plate({
   guide,
   picking,
   onPick,
+  pan,
 }: {
   src: string | null;
   guide: boolean;
   picking: boolean;
   onPick: (event: React.MouseEvent<HTMLImageElement>) => void;
+  pan: PanProps;
 }) {
   return (
     <div className="checker relative mx-auto aspect-square w-full max-w-sm overflow-hidden rounded-lg border border-line">
@@ -1024,6 +1323,7 @@ function Plate({
           src={src}
           alt="Icon pixels"
           onClick={onPick}
+          {...pan}
           className={`h-full w-full object-cover ${picking ? "cursor-crosshair" : ""}`}
         />
       ) : null}
